@@ -1,0 +1,74 @@
+# sarima_ohne_exogene.py
+import numpy as np, pandas as pd, warnings
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+warnings.filterwarnings("ignore")
+
+# ------------------ KONFIG ------------------
+TRAIN_START, TRAIN_END = "2019-01", "2023-12"
+FCAST_START, FCAST_END = "2024-01", "2024-12"
+S = 12
+LOG = True
+GRID = [((1,1,1),(1,1,1,S)), ((0,1,1),(0,1,1,S)), ((1,1,0),(1,1,0,S)), ((2,1,2),(1,1,1,S))]
+
+# === Interne Daten (Umsatz) — bitte füllen ===
+SALES_INTERNE_DATEN = {Confidential}
+
+# ------------------ HELFER ------------------
+def month_index(start:str,end:str)->pd.DatetimeIndex:
+    return pd.period_range(start=start,end=end,freq="M").to_timestamp("M") - pd.offsets.MonthBegin(1)
+
+def series_from_month_dict(d:dict,start:str,end:str,name="y")->pd.Series:
+    idx = month_index(start,end)
+    s = pd.Series([d.get(f"{dt.year}-{dt.month:02d}", np.nan) for dt in idx], index=idx, name=name).asfreq("MS")
+    if s.isna().any():
+        missing = [f"{dt.year}-{dt.month:02d}" for dt,v in zip(idx,s) if pd.isna(v)]
+        raise ValueError(f"Fehlende Werte in {name}: {missing[:6]}{'...' if len(missing)>6 else ''}")
+    return s
+
+def pick_best_model(y:pd.Series, grid):
+    best, best_aic, best_orders = None, np.inf, None
+    for order, seas in grid:
+        try:
+            res = SARIMAX(y, order=order, seasonal_order=seas,
+                          enforce_stationarity=False, enforce_invertibility=False).fit(disp=False)
+            if res.aic < best_aic: best, best_aic, best_orders = res, res.aic, (order, seas)
+        except Exception: pass
+    if best is None: raise RuntimeError("Kein SARIMA-Modell konvergiert.")
+    return best, best_orders, best_aic
+
+# Fehlermaße
+def mape(y_true,y_pred): return np.mean(np.abs((y_pred-y_true)/np.maximum(1e-12,y_true)))*100
+def mae(y_true,y_pred): return np.mean(np.abs(y_pred-y_true))
+def rmse(y_true,y_pred): return np.sqrt(np.mean((y_pred-y_true)**2))
+def bias(y_true,y_pred): return (y_pred.sum()-y_true.sum())/y_true.sum()*100
+
+# ------------------ PIPELINE ------------------
+y_all = series_from_month_dict(SALES_INTERNE_DATEN, "2019-01", "2024-12", name="sales")
+y_tr = y_all.loc[month_index(TRAIN_START, TRAIN_END)]
+y_te = y_all.loc[month_index(FCAST_START, FCAST_END)]
+
+y_fit = np.log1p(y_tr) if LOG else y_tr
+best, orders, aic = pick_best_model(y_fit, GRID)
+order, seas = orders
+
+fc = best.get_forecast(steps=len(y_te))
+fc_mean, ci = fc.predicted_mean, fc.conf_int()
+
+y_hat = np.expm1(fc_mean) if LOG else fc_mean
+ci_lo = np.expm1(ci.iloc[:,0]) if LOG else ci.iloc[:,0]
+ci_hi = np.expm1(ci.iloc[:,1]) if LOG else ci.iloc[:,1]
+
+# Kennzahlen
+mape_ = mape(y_te,y_hat)
+mae_ = mae(y_te,y_hat)
+rmse_ = rmse(y_te,y_hat)
+bias_ = bias(y_te,y_hat)
+
+print("=== SARIMA (ohne Exogene) ===")
+print(f"Bestes Modell: order={order}, seasonal_order={seas}, AIC={aic:.2f}")
+print(f"MAPE: {mape_:.2f}% | MAE: {mae_:,.0f} | RMSE: {rmse_:,.0f} | Bias: {bias_:+.2f}%")
+print(f"Summe Ist: {y_te.sum():,.0f} | Summe Prognose: {y_hat.sum():,.0f}\n")
+
+print("Monat | Ist        | Prognose   | CI-unter  | CI-ober")
+for dt, yt, yh, lo, hi in zip(y_te.index, y_te.values, y_hat.values, ci_lo.values, ci_hi.values):
+    print(f"{dt:%Y-%m} | {yt:>10,.0f} | {yh:>10,.0f} | {lo:>10,.0f} | {hi:>10,.0f}")

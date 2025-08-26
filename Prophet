@@ -1,0 +1,175 @@
+import pandas as pd 
+import numpy as np
+from prophet import Prophet
+import matplotlib.pyplot as plt
+import warnings
+import os
+from pathlib import Path
+warnings.filterwarnings('ignore')
+
+# Euro-Daten
+data = ["Interne-Umsatzdaten.csv"]
+
+def parse_german_number(value_str):
+    """
+    Konvertiert deutsche Zahlenformatierung zu Python float
+    Beispiel: '59.857.755,94' -> 59857755.94
+    """
+    parts = value_str.split(',')
+    if len(parts) == 2:
+        # Es gibt Dezimalstellen
+        integer_part = parts[0].replace('.', '')  # Entferne Tausendertrennzeichen
+        decimal_part = parts[1]
+        return float(f'{integer_part}.{decimal_part}')
+    else:
+        # Keine Dezimalstellen
+        return float(value_str.replace('.', ''))
+
+def format_euro_german(value):
+    """
+    Formatiert Zahlen im deutschen Euro-Format
+    Beispiel: 59857755.94 -> '59.857.755,94 €'
+    """
+    formatted = f'{value:,.2f}'
+    # Ersetze amerikanische Formatierung durch deutsche
+    formatted = formatted.replace(',', 'X').replace('.', ',').replace('X', '.')
+    return formatted + ' €'
+
+# Erstelle DataFrame für Prophet
+print("Verarbeite Daten...")
+df_data = []
+for date_str, value_str in data:
+    # Konvertiere deutsches Datumsformat DD.MM.YY zu YYYY-MM-DD
+    day, month, year = date_str.split('.')
+    full_year = f'20{year}'
+    date = f'{full_year}-{month}-{day}'
+    value = parse_german_number(value_str)
+    df_data.append({'ds': date, 'y': value})
+
+df = pd.DataFrame(df_data)
+df['ds'] = pd.to_datetime(df['ds'])
+
+print(f"Euro-formatierte Daten geladen:")
+print(f"Datenbereich: {df['ds'].min()} bis {df['ds'].max()}")
+print(f"Anzahl Datenpunkte: {len(df)}")
+print(f"Wertebereich: {df['y'].min():,.2f} € bis {df['y'].max():,.2f} €")
+print()
+
+# Erstelle und trainiere das Prophet-Modell
+print("Training des Prophet-Modells...")
+model = Prophet(
+    yearly_seasonality=True,
+    weekly_seasonality=False,
+    daily_seasonality=False,
+    changepoint_prior_scale=0.05
+)
+
+model.fit(df)
+
+# Erstelle Future-DataFrame für 2024 Prognose
+future_periods = 12  # 12 Monate für 2024
+future = model.make_future_dataframe(periods=future_periods, freq='MS')
+
+print(f"Erstelle Prognose für {future_periods} Monate in 2024...")
+forecast = model.predict(future)
+
+# Extrahiere 2024 Vorhersagen
+forecast_2024 = forecast[forecast['ds'].dt.year == 2024].copy()
+
+# Ausgabe der Prognose
+print()
+print('=' * 90)
+print('2024 FACEBOOK PROPHET PROGNOSE')
+print('=' * 90)
+print('Monat' + ' ' * 15 + 'Prognose (€)' + ' ' * 8 + 'Untere Grenze (€)' + ' ' * 5 + 'Obere Grenze (€)')
+print('-' * 90)
+for _, row in forecast_2024.iterrows():
+    month_name = row['ds'].strftime('%B %Y')
+    print(f'{month_name:<20} {row["yhat"]:>15,.2f} {row["yhat_lower"]:>18,.2f} {row["yhat_upper"]:>18,.2f}')
+
+print()
+print('ZUSAMMENFASSUNG:')
+print(f'Durchschnittlicher Prognosewert: {forecast_2024["yhat"].mean():,.2f} €')
+print(f'Minimaler Prognosewert: {forecast_2024["yhat"].min():,.2f} €')
+print(f'Maximaler Prognosewert: {forecast_2024["yhat"].max():,.2f} €')
+print(f'Standardabweichung: {forecast_2024["yhat"].std():,.2f} €')
+
+# Erstelle Visualisierung
+print("\nErstelle Visualisierung...")
+plt.figure(figsize=(16, 10))
+
+# Historische Daten in Millionen Euro für bessere Lesbarkeit
+plt.plot(df['ds'], df['y']/1000000, 'o-', color='blue', linewidth=2, markersize=6, label='Historische Daten')
+
+# Prognose für 2024
+forecast_future = forecast[forecast['ds'] > df['ds'].max()]
+plt.plot(forecast_future['ds'], forecast_future['yhat']/1000000, '--', color='red', linewidth=3, label='2024 Prognose')
+
+# Konfidenzintervall
+plt.fill_between(forecast_future['ds'], 
+                forecast_future['yhat_lower']/1000000, 
+                forecast_future['yhat_upper']/1000000, 
+                color='red', alpha=0.2, label='Konfidenzintervall')
+
+plt.title('Facebook Prophet Prognose: Historische Daten (2019-2023) und 2024 Vorhersage\nWerte in Millionen Euro', 
+          fontsize=16, fontweight='bold')
+plt.xlabel('Datum', fontsize=12)
+plt.ylabel('Wert (Millionen €)', fontsize=12)
+plt.legend(fontsize=12)
+plt.grid(True, alpha=0.3)
+plt.xticks(rotation=45)
+plt.tight_layout()
+
+# Speichere Visualisierung
+plt.savefig('prophet_forecast_euro.png', dpi=300, bbox_inches='tight')
+print("Visualisierung gespeichert als: prophet_forecast_euro.png")
+
+# Bereite CSV-Export vor
+print("\nBereite CSV-Export vor...")
+
+# Desktop-Pfad ermitteln
+desktop_path = Path.home() / 'Desktop'
+
+# 2024 Prognose für CSV vorbereiten
+forecast_export = forecast_2024[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
+
+# Deutsche Monatsnamen hinzufügen
+german_months = {
+    1: 'Januar', 2: 'Februar', 3: 'März', 4: 'April', 5: 'Mai', 6: 'Juni',
+    7: 'Juli', 8: 'August', 9: 'September', 10: 'Oktober', 11: 'November', 12: 'Dezember'
+}
+
+forecast_export['Monat'] = forecast_export['ds'].dt.month.map(german_months)
+forecast_export['Jahr'] = forecast_export['ds'].dt.year
+forecast_export['Datum'] = forecast_export['ds'].dt.strftime('%d.%m.%Y')
+
+# Formatiere Werte im deutschen Euro-Format
+forecast_export['Prognose_formatiert'] = forecast_export['yhat'].apply(format_euro_german)
+forecast_export['Untere_Grenze_formatiert'] = forecast_export['yhat_lower'].apply(format_euro_german)
+forecast_export['Obere_Grenze_formatiert'] = forecast_export['yhat_upper'].apply(format_euro_german)
+
+# Spalten für CSV auswählen und umbenennen
+forecast_final = forecast_export[['Datum', 'Monat', 'Jahr', 'Prognose_formatiert', 'Untere_Grenze_formatiert', 'Obere_Grenze_formatiert']].copy()
+forecast_final.columns = ['Datum', 'Monat', 'Jahr', 'Prognose', 'Untere_Grenze', 'Obere_Grenze']
+
+# Auf Desktop speichern
+csv_path = desktop_path / 'Prophet.csv'
+forecast_final.to_csv(csv_path, index=False, sep=';', encoding='utf-8-sig')
+
+print(f'✅ CSV-Datei erfolgreich gespeichert: {csv_path}')
+print()
+print('Inhalt der CSV-Datei:')
+print(forecast_final.to_string(index=False))
+
+# Zusätzliche Komponenten-Analyse (optional)
+print("\nErstelle Komponenten-Analyse...")
+fig = model.plot_components(forecast)
+plt.tight_layout()
+plt.savefig('prophet_components.png', dpi=300, bbox_inches='tight')
+print("Komponenten-Analyse gespeichert als: prophet_components.png")
+
+print("\n🎉 Prophet-Analyse abgeschlossen!")
+print("Dateien erstellt:")
+print("- prophet_forecast_euro.png (Hauptvisualisierung)")
+print("- prophet_components.png (Trend- und Saisonalitäts-Komponenten)")
+print(f"- {csv_path} (CSV mit Prognose-Daten)")

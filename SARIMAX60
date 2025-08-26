@@ -1,0 +1,175 @@
+# sarimax_mit_exogenen_interne_daten.py
+import numpy as np, pandas as pd, warnings
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from sklearn.preprocessing import StandardScaler
+warnings.filterwarnings("ignore")
+
+# ------------------ KONFIG ------------------
+TRAIN_START, TRAIN_END = "2019-01", "2023-12"
+FCAST_START, FCAST_END = "2024-01", "2024-12"
+S = 12
+LOG = True
+STANDARDIZE_EXOG = True
+GRID = [((1,1,1),(1,1,1,S)), ((0,1,1),(0,1,1,S)), ((1,1,0),(1,1,0,S)), ((2,1,2),(1,1,1,S))]
+
+# === Interne Daten (Umsatz) — bitte füllen: Keys 'YYYY-MM' 2019-01..2024-12 ===
+SALES_INTERNE_DATEN = {"Confidentail"}
+
+# === Eingebettete EXOGENE (deine oben gegebenen Daten, unverändert) ===
+EMBEDDED_EXOGENOUS_DATA = """date,USD_per_EUR,HICP_index,GDP_EUR_mn,inflation_rate
+2019-01-01,0.8730,105.1,3400000,1.4
+2019-02-01,0.8815,105.3,3400000,1.4
+2019-03-01,0.8935,105.8,3400000,1.4
+2019-04-01,0.8900,106.1,3420000,1.4
+2019-05-01,0.8975,106.3,3420000,1.4
+2019-06-01,0.8855,106.5,3420000,1.4
+2019-07-01,0.8925,106.8,3440000,1.4
+2019-08-01,0.9055,106.9,3440000,1.4
+2019-09-01,0.9125,107.1,3440000,1.4
+2019-10-01,0.9035,107.4,3460000,1.4
+2019-11-01,0.9095,107.6,3460000,1.4
+2019-12-01,0.892882,107.8,3957210,1.4
+2020-01-01,0.8975,108.2,3480000,0.5
+2020-02-01,0.9125,108.4,3480000,0.5
+2020-03-01,0.9255,108.1,3350000,0.5
+2020-04-01,0.9185,107.8,3200000,0.5
+2020-05-01,0.9075,107.9,3150000,0.5
+2020-06-01,0.8885,108.2,3250000,0.5
+2020-07-01,0.8755,108.4,3300000,0.5
+2020-08-01,0.8465,108.6,3350000,0.5
+2020-09-01,0.8535,108.9,3380000,0.5
+2020-10-01,0.8615,109.1,3400000,0.5
+2020-11-01,0.8435,109.3,3420000,0.5
+2020-12-01,0.876819,109.5,3940140,0.5
+2021-01-01,0.8195,109.8,3470000,3.1
+2021-02-01,0.8335,110.2,3480000,3.1
+2021-03-01,0.8455,110.8,3500000,3.1
+2021-04-01,0.8285,111.2,3520000,3.1
+2021-05-01,0.8195,111.6,3540000,3.1
+2021-06-01,0.8415,112.1,3560000,3.1
+2021-07-01,0.8535,112.5,3580000,3.1
+2021-08-01,0.8515,112.8,3590000,3.1
+2021-09-01,0.8675,113.2,3600000,3.1
+2021-10-01,0.8615,113.8,3610000,3.1
+2021-11-01,0.8735,114.2,3620000,3.1
+2021-12-01,0.845662,114.6,4348300,3.1
+2022-01-01,0.8915,115.2,3640000,6.9
+2022-02-01,0.8765,115.8,3650000,6.9
+2022-03-01,0.9055,116.5,3650000,6.9
+2022-04-01,0.9275,117.1,3650000,6.9
+2022-05-01,0.9385,117.8,3650000,6.9
+2022-06-01,0.9545,118.2,3650000,6.9
+2022-07-01,0.9845,118.6,3650000,6.9
+2022-08-01,1.0125,118.9,3650000,6.9
+2022-09-01,0.9985,119.2,3650000,6.9
+2022-10-01,0.9755,119.5,3650000,6.9
+2022-11-01,0.9685,119.8,3650000,6.9
+2022-12-01,0.951098,120.1,4163600,6.9
+2023-01-01,0.9276,118.2,3650000,2.9
+2023-02-01,0.9336,118.7,3650000,2.9
+2023-03-01,0.9341,119.0,3650000,2.9
+2023-04-01,0.9110,119.5,3700000,2.9
+2023-05-01,0.9188,120.0,3700000,2.9
+2023-06-01,0.9227,120.3,3700000,2.9
+2023-07-01,0.9047,120.6,3750000,2.9
+2023-08-01,0.9162,120.8,3750000,2.9
+2023-09-01,0.9358,121.0,3750000,2.9
+2023-10-01,0.9464,121.3,3800000,2.9
+2023-11-01,0.9252,121.5,3800000,2.9
+2023-12-01,0.9160,121.8,3800000,2.9
+2024-01-01,1.0917,129.8,762520.8,2.4
+2024-02-01,1.0794,129.8,762520.8,2.4
+2024-03-01,1.087,129.8,762520.8,2.4
+2024-04-01,1.0726,129.8,762520.8,2.4
+2024-05-01,1.0807,129.8,762520.8,2.4
+2024-06-01,1.0765,129.8,762520.8,2.4
+2024-07-01,1.0851,129.8,762667.0,2.4
+2024-08-01,1.1015,129.8,762667.0,2.4
+2024-09-01,1.1107,129.7,762667.0,2.4
+2024-10-01,1.0904,130.2,764056.4,2.4
+2024-11-01,1.0636,129.3,764056.4,2.4
+2024-12-01,1.0479,130.2,764056.4,2.4
+"""
+
+# ------------------ HELFER ------------------
+def month_index(start:str,end:str)->pd.DatetimeIndex:
+    return pd.period_range(start=start,end=end,freq="M").to_timestamp("M") - pd.offsets.MonthBegin(1)
+
+def series_from_month_dict(d:dict,start:str,end:str,name="y")->pd.Series:
+    idx = month_index(start,end)
+    s = pd.Series([d.get(f"{dt.year}-{dt.month:02d}", np.nan) for dt in idx], index=idx, name=name).asfreq("MS")
+    if s.isna().any():
+        missing = [f"{dt.year}-{dt.month:02d}" for dt,v in zip(idx,s) if pd.isna(v)]
+        raise ValueError(f"Fehlende Werte in {name}: {missing[:6]}{'...' if len(missing)>6 else ''}")
+    return s
+
+def exog_from_csv_text(csv_text:str)->pd.DataFrame:
+    exog = pd.read_csv(pd.io.common.StringIO(csv_text))
+    exog["date"] = pd.to_datetime(exog["date"])
+    exog = exog.set_index("date").asfreq("MS")
+    # Nur die Spalten behalten, die modelliert werden sollen
+    cols = [c for c in exog.columns if c.lower() in {"usd_per_eur","hicp_index","gdp_eur_mn","inflation_rate"}]
+    return exog[cols]
+
+def pick_best_model(y:pd.Series, X:pd.DataFrame, grid):
+    best, best_aic, best_orders = None, np.inf, None
+    for order, seas in grid:
+        try:
+            res = SARIMAX(y, exog=X, order=order, seasonal_order=seas,
+                          enforce_stationarity=False, enforce_invertibility=False).fit(disp=False)
+            if res.aic < best_aic: best, best_aic, best_orders = res, res.aic, (order,seas)
+        except Exception: pass
+    if best is None: raise RuntimeError("Kein SARIMAX-Modell konvergiert.")
+    return best, best_orders, best_aic
+
+# Fehlermaße
+def MAPE(y_true,y_pred): return np.mean(np.abs((y_pred-y_true)/np.maximum(1e-12,y_true)))*100
+def MAE (y_true,y_pred): return np.mean(np.abs(y_pred-y_true))
+def RMSE(y_true,y_pred): return np.sqrt(np.mean((y_pred-y_true)**2))
+def BIAS(y_true,y_pred): return (y_pred.sum()-y_true.sum())/y_true.sum()*100
+
+# ------------------ PIPELINE ------------------
+# 1) Endogene & Exogene aufbauen (2019-01..2024-12)
+y_all  = series_from_month_dict(SALES_INTERNE_DATEN, "2019-01", "2024-12", name="sales")
+X_all  = exog_from_csv_text(EMBEDDED_EXOGENOUS_DATA).loc["2019-01":"2024-12"]
+
+# 2) Split Train/Forecast
+idx_tr, idx_te = month_index(TRAIN_START,TRAIN_END), month_index(FCAST_START,FCAST_END)
+y_tr, y_te = y_all.loc[idx_tr], y_all.loc[idx_te]
+X_tr, X_te = X_all.loc[idx_tr], X_all.loc[idx_te]
+
+# 3) (Optional) Standardisierung der Exogenen (nur auf Train fitten!)
+if STANDARDIZE_EXOG:
+    scaler = StandardScaler().fit(X_tr.values)
+    X_tr = pd.DataFrame(scaler.transform(X_tr.values), index=X_tr.index, columns=X_tr.columns)
+    X_te = pd.DataFrame(scaler.transform(X_te.values), index=X_te.index, columns=X_te.columns)
+
+# 4) (Optional) Log-Transformation der Zielgröße
+y_fit = np.log1p(y_tr) if LOG else y_tr
+
+# 5) Modellauswahl & Fit
+best, orders, aic = pick_best_model(y_fit, X_tr, GRID)
+order, seas = orders
+
+# 6) Forecast 2024 mit passenden Exogenen
+fc = best.get_forecast(steps=len(y_te), exog=X_te)
+fc_mean, ci = fc.predicted_mean, fc.conf_int()
+
+y_hat = np.expm1(fc_mean) if LOG else fc_mean
+ci_lo = np.expm1(ci.iloc[:,0]) if LOG else ci.iloc[:,0]
+ci_hi = np.expm1(ci.iloc[:,1]) if LOG else ci.iloc[:,1]
+
+# 7) Kennzahlen
+mape_ = MAPE(y_te,y_hat)
+mae_  = MAE (y_te,y_hat)
+rmse_ = RMSE(y_te,y_hat)
+bias_ = BIAS(y_te,y_hat)
+
+# 8) Ausgabe
+print("=== SARIMAX (mit Exogenen: USD/EUR, HICP, GDP, Inflation) ===")
+print(f"Bestes Modell: order={order}, seasonal_order={seas}, AIC={aic:.2f}")
+print(f"MAPE: {mape_:.2f}% | MAE: {mae_:,.0f} | RMSE: {rmse_:,.0f} | Bias: {bias_:+.2f}%")
+print(f"Summe Ist: {y_te.sum():,.0f} | Summe Prognose: {y_hat.sum():,.0f}\n")
+print("Monat | Ist        | Prognose   | CI-unter  | CI-ober")
+for dt, yt, yh, lo, hi in zip(y_te.index,y_te.values,y_hat.values,ci_lo.values,ci_hi.values):
+    print(f"{dt:%Y-%m} | {yt:>10,.0f} | {yh:>10,.0f} | {lo:>10,.0f} | {hi:>10,.0f}")
